@@ -39,6 +39,9 @@ GNU General Public License for more details.
 #elif defined(OS_FREEBSD)
  #include <cam/scsi/scsi_sg.h>
  #define SCSI_TIMEOUT 5000
+ #include <camlib.h>
+ #include <cam/cam_ccb.h>
+ #include <cam/scsi/scsi_message.h>
 #elif defined(OS_AIX)
  #define _LINUX_SOURCE_COMPAT
  #include <sys/scsi.h>
@@ -304,6 +307,14 @@ bool SCSIWriteEncryptOptions(string tapeDevice, SCSIEncryptOptions* eOptions){
     	);  
 }
 
+#if defined(OS_FREEBSD)  // FreeBSD System
+#define PASS_HZ 1000*60
+#define PASS_DEFAULT_TIMEOUT 5*PASS_HZ
+static int pass_timeout = PASS_DEFAULT_TIMEOUT;
+typedef unsigned char CDB_T[12];
+#endif
+
+
 bool SCSIExecute(string tapedrive, unsigned char* cmd_p,int cmd_len,unsigned char* dxfer_p,int dxfer_len, bool cmd_to_device, bool show_error)
 {
 	const char* tapedevice=tapedrive.c_str();
@@ -311,7 +322,7 @@ bool SCSIExecute(string tapedrive, unsigned char* cmd_p,int cmd_len,unsigned cha
 	SCSI_PAGE_SENSE* sd=new SCSI_PAGE_SENSE;
 	memset(sd,0,sizeof(SCSI_PAGE_SENSE));
 
-#if defined(OS_LINUX) || defined(OS_FREEBSD)  // Linux or FreeBSD System
+#if defined(OS_LINUX) // Linux System
         errno=0;
         sg_fd = open(tapedevice, O_RDONLY);
         if( sg_fd==-1){
@@ -343,6 +354,61 @@ bool SCSIExecute(string tapedrive, unsigned char* cmd_p,int cmd_len,unsigned cha
 
 
         sresult=cmdio.status;
+#elif defined(OS_FREEBSD)  // FreeBSD System
+        errno=0;
+	cam_device* device = cam_open_pass(tapedevice, O_RDWR | O_EXCL, NULL);
+        if( device==NULL){
+	  cerr<<"Could not open device '"<<tapedevice<<"': "<<cam_errbuf;
+                exit(EXIT_FAILURE);
+        }
+
+	union ccb *ccb;
+	CDB_T *cdb;
+
+	ccb = cam_getccb(device);
+	cdb = (CDB_T *) &ccb->csio.cdb_io.cdb_bytes; /* pointer to actual cdb. */
+
+	/* cam_getccb() zeros the CCB header only. So now clear the
+	 * payload portion of the ccb.
+	 */
+	bzero(&(&ccb->ccb_h)[1], sizeof(struct ccb_scsiio) - sizeof(struct ccb_hdr));
+
+	/* copy the CDB... */
+	memcpy(cdb,cmd_p,cmd_len);
+
+	cam_fill_csio(&ccb->csio,
+		      RETRYCOUNT,/* retries */
+		      NULL,/* cbfcnp*/
+		      (cmd_to_device)?CAM_DIR_IN:CAM_DIR_OUT,/* flags */
+		      MSG_SIMPLE_Q_TAG,/* tag action */
+		      dxfer_p,/* data ptr */
+		      dxfer_len,/* xfer_len */
+		      SSD_FULL_SIZE,/* sense_len */
+		      cmd_len,/* cdb_len */
+		      pass_timeout/* timeout */ /* should be 5 minutes or more?! */
+		      );
+
+	pass_timeout = PASS_DEFAULT_TIMEOUT; /* make sure it gets reset. */
+	memset(sd, 0, sizeof(SCSI_PAGE_SENSE)); /* clear sense buffer... */
+
+	if (cmd_to_device)
+	{
+	  memset(dxfer_p, 0, dxfer_len);
+	}
+	
+	eresult = cam_send_ccb(device,ccb);
+	if (eresult < 0 ||
+	    (ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)
+	{
+	  /* copy our sense data, sigh... */
+	  memcpy(sd,(void *) &ccb->csio.sense_data,
+		 min(sizeof(SCSI_PAGE_SENSE), sizeof(struct scsi_sense_data)));
+	}
+
+	//sresult = ccb->ccb_h.status;
+	sresult = 0;
+	/* okay, we did good, maybe? */
+	cam_freeccb(ccb);
 #elif defined(OS_AIX)  // AIX System
 
 	errno=0;
@@ -409,8 +475,9 @@ bool SCSIExecute(string tapedrive, unsigned char* cmd_p,int cmd_len,unsigned cha
 	 }
 	cout<<endl;
 #endif
+#if !defined(OS_FREEBSD)  // FreeBSD System
 	close(sg_fd);
-	
+#endif	
 
 	bool retval=true;	
 
