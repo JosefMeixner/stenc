@@ -379,7 +379,7 @@ bool SCSIExecute(string tapedrive, unsigned char* cmd_p,int cmd_len,unsigned cha
 	cam_fill_csio(&ccb->csio,
 		      RETRYCOUNT,/* retries */
 		      NULL,/* cbfcnp*/
-		      (cmd_to_device)?CAM_DIR_IN:CAM_DIR_OUT,/* flags */
+		      (cmd_to_device)?CAM_DIR_OUT:CAM_DIR_IN,/* flags */
 		      MSG_SIMPLE_Q_TAG,/* tag action */
 		      dxfer_p,/* data ptr */
 		      dxfer_len,/* xfer_len */
@@ -403,10 +403,13 @@ bool SCSIExecute(string tapedrive, unsigned char* cmd_p,int cmd_len,unsigned cha
 	  /* copy our sense data, sigh... */
 	  memcpy(sd,(void *) &ccb->csio.sense_data,
 		 min(sizeof(SCSI_PAGE_SENSE), sizeof(struct scsi_sense_data)));
-	}
 
-	//sresult = ccb->ccb_h.status;
-	sresult = 0;
+	  sresult = 1;
+	}
+	else
+	{
+	  sresult = 0;
+	}
 	/* okay, we did good, maybe? */
 	cam_freeccb(ccb);
 #elif defined(OS_AIX)  // AIX System
